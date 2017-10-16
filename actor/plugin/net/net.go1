@@ -1,0 +1,207 @@
+package mnet
+
+import (
+	"log"
+	stdnet "net"
+	"s7/share/net"
+	"s7/share/util"
+
+	"github.com/AsynkronIT/protoactor-go/actor"
+)
+
+// Acceptor ------------------------------------------------------------------
+type AcceptorEvent struct {
+	C *stdnet.TCPConn
+	E error
+}
+
+type Disconnected struct {
+}
+
+type AcceptorAddrEvent struct {
+	A *stdnet.TCPAddr
+}
+
+func (ae *AcceptorEvent) GetPort() int {
+	return ae.C.LocalAddr().(*stdnet.TCPAddr).Port
+}
+
+func MakeAcceptor2(l *stdnet.TCPListener, upper, lower int) func(actor.ActorFunc) actor.ActorFunc {
+	return func(next actor.ActorFunc) actor.ActorFunc {
+		var (
+			addr = l.Addr().String()
+			a    *net.Acceptor
+			e    error
+
+			connNum int
+		)
+		return func(ctx actor.Context) {
+			switch m := ctx.Message().(type) {
+			case *actor.Started:
+				a, e = net.NewAcceptor2(
+					l,
+					func(c *stdnet.TCPConn, e error) {
+
+						ctx.Self().Tell(&AcceptorEvent{C: c, E: e})
+					})
+				util.PanicOnErr(e)
+				ctx.Self().Tell(&AcceptorAddrEvent{a.Addr()})
+			case *actor.Stopping, *actor.Restart:
+				if a != nil {
+					a.Close()
+					a = nil
+				}
+			case *actor.Terminated:
+				connNum--
+				log.Println("conn==", connNum)
+				if connNum <= lower && a == nil {
+					log.Println("conn== start accept", connNum, lower, upper)
+					a, e = net.NewAcceptor(
+						addr,
+						func(c *stdnet.TCPConn, e error) {
+
+							ctx.Self().Tell(&AcceptorEvent{C: c, E: e})
+						})
+					util.PanicOnErr(e)
+					ctx.Self().Tell(&AcceptorAddrEvent{a.Addr()})
+				}
+			case *AcceptorEvent:
+				if m.C != nil {
+					connNum++
+					log.Println("conn==", connNum)
+					if connNum >= upper && a != nil {
+						log.Println("conn== stop accept", connNum, lower, upper)
+						a.Close()
+						a = nil
+					}
+				}
+			}
+			next(ctx)
+		}
+	}
+}
+
+// warning
+func MakeAcceptor(addr string, upper, lower int) func(actor.ActorFunc) actor.ActorFunc {
+	return func(next actor.ActorFunc) actor.ActorFunc {
+		var (
+			a *net.Acceptor
+			e error
+
+			connNum int
+		)
+		return func(ctx actor.Context) {
+			switch m := ctx.Message().(type) {
+			case *actor.Started:
+				a, e = net.NewAcceptor(
+					addr,
+					func(c *stdnet.TCPConn, e error) {
+
+						ctx.Self().Tell(&AcceptorEvent{C: c, E: e})
+					})
+				util.PanicOnErr(e)
+				ctx.Self().Tell(&AcceptorAddrEvent{a.Addr()})
+			case *actor.Stopping, *actor.Restart:
+				if a != nil {
+					a.Close()
+					a = nil
+				}
+			case *actor.Terminated:
+				connNum--
+				log.Println("conn==", connNum)
+				if connNum <= lower && a == nil {
+					log.Println("conn== start accept", connNum, lower, upper)
+					a, e = net.NewAcceptor(
+						addr,
+						func(c *stdnet.TCPConn, e error) {
+
+							ctx.Self().Tell(&AcceptorEvent{C: c, E: e})
+						})
+					util.PanicOnErr(e)
+					ctx.Self().Tell(&AcceptorAddrEvent{a.Addr()})
+				}
+			case *AcceptorEvent:
+				if m.C != nil {
+					connNum++
+					log.Println("conn==", connNum)
+					if connNum >= upper && a != nil {
+						log.Println("conn== stop accept", connNum, lower, upper)
+						a.Close()
+						a = nil
+					}
+				}
+			}
+			next(ctx)
+		}
+	}
+}
+
+// Connection ------------------------------------------------------------------
+type ConnectionEvent struct {
+	E error
+}
+
+type op int
+
+const (
+	send      op = 1
+	closesend op = 2
+	close     op = 3
+)
+
+type ConnOp struct {
+	op
+	m net.Message
+}
+
+func SendMsg(ctx actor.Context, m net.Message) {
+	ctx.Self().Tell(&ConnOp{op: send, m: m})
+}
+
+func CloseSend(ctx actor.Context) {
+	ctx.Self().Tell(&ConnOp{op: closesend})
+}
+
+func Close(ctx actor.Context) {
+	ctx.Self().Tell(&ConnOp{op: close})
+}
+
+// warning
+func MakeConnection(c *stdnet.TCPConn, io net.MessageReadWriter, logsend, logrecv bool, readTimeOut int) func(actor.ActorFunc) actor.ActorFunc {
+	return func(next actor.ActorFunc) actor.ActorFunc {
+		var (
+			conn *net.Connection
+		)
+		return func(ctx actor.Context) {
+			switch m := ctx.Message().(type) {
+			case *actor.Started:
+				conn = net.NewConnection(
+					c,
+					func(m net.Message, e error) {
+						if m != nil {
+							ctx.Self().Tell(m)
+						}
+						if e != nil {
+							ctx.Self().Tell(&ConnectionEvent{E: e})
+						}
+					},
+					io,
+					&net.ConnectionConfig{ReadTimeoutS: readTimeOut},
+				)
+
+			case *actor.Stopping, *actor.Restart:
+				conn.Close()
+			case *ConnOp:
+				switch m.op {
+				case send:
+					conn.Send(m.m)
+				case closesend:
+					conn.CloseSend()
+				case close:
+					conn.Close()
+				}
+			}
+			next(ctx)
+		}
+	}
+}
