@@ -9,20 +9,30 @@ import (
 
 var (
 	enableLog = true
+	filter    = map[reflect.Type]struct{}{}
 )
 
 func Enable(enable bool) {
 	enableLog = enable
 }
 
+func Filter(t ...interface{}) {
+	for _, t := range t {
+		filter[reflect.TypeOf(t)] = struct{}{}
+	}
+}
+
 func MsgLogger(next actor.ActorFunc) actor.ActorFunc {
 	return func(ctx actor.Context) {
 		if enableLog {
-			log.Printf("self:%v(%v) msg:%v(%v) sender:%v(%v)",
-				ctx.Self(), reflect.TypeOf(ctx.Self()),
-				ctx.Message(), reflect.TypeOf(ctx.Message()),
-				ctx.Sender(), reflect.TypeOf(ctx.Sender()),
-			)
+			mt := reflect.TypeOf(ctx.Message())
+			if _, ok := filter[mt]; !ok {
+				log.Printf("self:%v(%v) msg:%v(%v) sender:%v(%v)",
+					ctx.Self(), reflect.TypeOf(ctx.Self()),
+					ctx.Message(), mt,
+					ctx.Sender(), reflect.TypeOf(ctx.Sender()),
+				)
+			}
 		}
 		next(ctx)
 	}
