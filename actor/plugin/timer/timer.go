@@ -1,4 +1,4 @@
-package mtimer
+package timer
 
 import (
 	"context"
@@ -40,5 +40,47 @@ func MakeTimer(dur time.Duration) func(actor.ActorFunc) actor.ActorFunc {
 			}
 			next(ctx)
 		}
+	}
+}
+
+type Timer struct {
+	context.Context
+	context.CancelFunc
+	*sync.WaitGroup
+	time.Duration
+}
+
+func NewTimer(dur time.Duration) *Timer {
+	tmr := &Timer{}
+	tmr.Context, tmr.CancelFunc = context.WithCancel(context.TODO())
+	tmr.WaitGroup = &sync.WaitGroup{}
+	tmr.Duration = dur
+
+	return tmr
+}
+
+func (t *Timer) OnStart(ctx actor.Context) {
+	t.WaitGroup.Add(1)
+	go func() {
+		ticker := time.NewTicker(t.Duration)
+		defer func() {
+			ticker.Stop()
+			t.WaitGroup.Done()
+		}()
+		for {
+			select {
+			case <-t.Context.Done():
+				return
+			case <-ticker.C:
+				ctx.Self().Tell(TimerEvent{})
+			}
+		}
+	}()
+}
+func (t *Timer) OnOtherMessage(ctx actor.Context, m interface{}) {
+	switch m.(type) {
+	case *actor.Stopping, *actor.Restarting:
+		t.CancelFunc()
+		t.WaitGroup.Wait()
 	}
 }
